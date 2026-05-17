@@ -18,18 +18,17 @@ from models.unet_pretrained import UNetResNet
 model = UNetResNet()
 
 # -----------------------
-# Config (safe for MX350)
+# Config (Dell G7 GTX 1060 6GB)
 # -----------------------
-IMG_SIZE = 190
-BATCH_SIZE = 1
-pin_memory = False #Had no problem using GPU but we standardize same as sinet
+IMG_SIZE = 256
+BATCH_SIZE = 2
+pin_memory = True
 EPOCHS = 20
 LR = 1e-4
 SAVE_DIR = "checkpoints"
 os.makedirs(SAVE_DIR, exist_ok=True)
 
-#device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-device = torch.device("cpu")#force using cpu
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print("Using device:", device)
 
 # -----------------------
@@ -38,8 +37,8 @@ print("Using device:", device)
 
 # full dataset for counting only
 full_dataset = CamouflageDataset(
-    "mc_dataset/images",
-    "mc_dataset/masks",
+    "mc_dataset_cropped/images",
+    "mc_dataset_cropped/masks",
     size=IMG_SIZE,
     augment=False
 )
@@ -58,16 +57,16 @@ train_idx, val_idx, test_idx = random_split(
 
 # training dataset = augmentation ON
 train_dataset = CamouflageDataset(
-    "mc_dataset/images",
-    "mc_dataset/masks",
+    "mc_dataset_cropped/images",
+    "mc_dataset_cropped/masks",
     size=IMG_SIZE,
     augment=True
 )
 
 # validation/test dataset = augmentation OFF
 val_dataset = CamouflageDataset(
-    "mc_dataset/images",
-    "mc_dataset/masks",
+    "mc_dataset_cropped/images",
+    "mc_dataset_cropped/masks",
     size=IMG_SIZE,
     augment=False
 )
@@ -83,7 +82,7 @@ train_loader = DataLoader(
     batch_size=BATCH_SIZE,
     shuffle=True,
     num_workers=0,
-    pin_memory=False #same as SINET
+    pin_memory=pin_memory
 )
 
 val_loader = DataLoader(
@@ -91,7 +90,7 @@ val_loader = DataLoader(
     batch_size=BATCH_SIZE,
     shuffle=False,
     num_workers=0,
-    pin_memory=False
+    pin_memory=pin_memory
 )
 
 print(f"Total: {n_total} | Train: {len(train_set)} | Val: {len(val_set)} | Test: {len(test_set)}")
