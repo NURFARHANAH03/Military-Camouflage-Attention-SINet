@@ -1,0 +1,26 @@
+# Python cache
+__pycache__/
+*.pyc
+
+# Virtual environment
+.venv/
+venv/
+
+# Model checkpoints
+checkpoints/
+*.pth
+
+# Prediction outputs
+pred_samples/
+
+# Dataset
+mc_dataset/
+mc_dataset_cropped/
+
+# VSCode settings
+.vscode/
+
+# Images
+*.png
+*.jpg
+*.jpeg
