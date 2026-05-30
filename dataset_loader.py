@@ -17,15 +17,44 @@ class CamouflageDataset(Dataset):
         if augment:
             self.transform = A.Compose([
                 A.HorizontalFlip(p=0.5),
+
                 A.VerticalFlip(p=0.3),
+
                 A.RandomRotate90(p=0.5),
-                A.RandomBrightnessContrast(p=0.3),
+
+                A.RandomBrightnessContrast(
+                    brightness_limit=0.2,
+                    contrast_limit=0.2,
+                    p=0.5
+                ),
+
+                A.GaussianBlur(
+                    blur_limit=(3,5),
+                    p=0.2
+                ),
+
                 A.Resize(size, size),
+
+                # -----------------------
+                # ImageNet Normalization
+                # -----------------------
+                A.Normalize(
+                    mean=(0.485, 0.456, 0.406),
+                    std=(0.229, 0.224, 0.225)
+                ),
+
                 ToTensorV2()
             ])
+
         else:
             self.transform = A.Compose([
                 A.Resize(size, size),
+
+                A.Normalize(
+                    mean=(0.485, 0.456, 0.406),
+                    std=(0.229, 0.224, 0.225)
+                ),
+
                 ToTensorV2()
             ])
 
@@ -58,7 +87,7 @@ class CamouflageDataset(Dataset):
             )
 
         augmented = self.transform(image=image, mask=mask)
-        image = augmented["image"].float() / 255.0          # (3,H,W)
+        image = augmented["image"].float()      # (3,H,W)
         mask = augmented["mask"]                            # (H,W)
 
         # Convert mask to binary tensor (1,H,W)

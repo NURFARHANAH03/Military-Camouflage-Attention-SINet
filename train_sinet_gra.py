@@ -14,11 +14,11 @@ from models.sinet_gra import SINet_GRA
 # -----------------------
 # Config (Dell G7 GTX 1060 6GB)
 # -----------------------
-IMG_SIZE = 256
-BATCH_SIZE = 2
+IMG_SIZE = 320
+BATCH_SIZE = 4
 pin_memory = True
-EPOCHS = 20
-LR = 1e-4
+EPOCHS = 30
+LR = 5e-5
 
 SAVE_DIR = "checkpoints"
 PRED_DIR = "pred_samples_sinet_gra"
@@ -80,6 +80,13 @@ model = SINet_GRA(pretrained=True).to(device)
 
 bce_logits = nn.BCEWithLogitsLoss()
 optimizer = torch.optim.Adam(model.parameters(), lr=LR)
+
+scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+    optimizer,
+    mode='max',      # because higher Dice is better
+    factor=0.5,      # reduce LR by half
+    patience=3       # wait 3 epochs before reducing
+)
 
 train_losses, val_losses, val_dices = [], [], []
 best_val_dice = -1
@@ -165,6 +172,8 @@ for epoch in range(1, EPOCHS + 1):
     avg_val = running_vloss / max(1, len(val_loader))
     avg_dice = running_dice / max(1, len(val_loader))
 
+    scheduler.step(avg_dice)
+
     val_losses.append(avg_val)
     val_dices.append(avg_dice)
 
@@ -214,7 +223,7 @@ for i in range(3):
         out = model(img_b)
         prob = torch.sigmoid(out)[0, 0].cpu().numpy()
 
-    pred = (prob > 0.5).astype(np.uint8)
+    pred = (prob > 0.4).astype(np.uint8)
     gt = mask[0].numpy().astype(np.uint8)
 
     img_np = (img.permute(1, 2, 0).numpy() * 255).astype(np.uint8)
