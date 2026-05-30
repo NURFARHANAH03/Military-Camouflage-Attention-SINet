@@ -95,6 +95,16 @@ def dice_score(pred, target, eps=1e-7):
     dice = (2 * intersection + eps) / (union + eps)
     return dice.mean().item()
 
+def iou_score(pred, target, eps=1e-7):
+    pred = pred.contiguous().view(pred.shape[0], -1)
+    target = target.contiguous().view(target.shape[0], -1)
+
+    intersection = (pred * target).sum(dim=1)
+    union = pred.sum(dim=1) + target.sum(dim=1) - intersection
+
+    iou = (intersection + eps) / (union + eps)
+    return iou.mean().item()
+
 
 def dice_loss(probs, targets, eps=1e-7):
     probs = probs.contiguous().view(probs.shape[0], -1)
@@ -144,6 +154,7 @@ for epoch in range(1, EPOCHS + 1):
     model.eval()
     running_vloss = 0.0
     running_dice = 0.0
+    running_iou = 0.0
 
     with torch.no_grad():
         for imgs, masks in val_loader:
@@ -161,9 +172,11 @@ for epoch in range(1, EPOCHS + 1):
 
             preds_bin = (probs > 0.5).float()
             running_dice += dice_score(preds_bin, masks)
+            running_iou += iou_score(preds_bin, masks)
 
     avg_val = running_vloss / max(1, len(val_loader))
     avg_dice = running_dice / max(1, len(val_loader))
+    avg_iou = running_iou / max(1, len(val_loader))
 
     val_losses.append(avg_val)
     val_dices.append(avg_dice)
@@ -172,7 +185,8 @@ for epoch in range(1, EPOCHS + 1):
         f"Epoch {epoch}/{EPOCHS} | "
         f"Train Loss: {avg_train:.4f} | "
         f"Val Loss: {avg_val:.4f} | "
-        f"Val Dice: {avg_dice:.4f}"
+        f"Val Dice: {avg_dice:.4f} | "
+        f"Val IoU: {avg_iou:.4f}"
     )
 
     if avg_dice > best_val_dice:
