@@ -229,7 +229,7 @@ model.load_state_dict(
 )
 model.eval()
 
-for i in range(3):
+for i in range(10):
     img, mask = val_set[i]
     img_b = img.unsqueeze(0).to(device)
 
@@ -240,7 +240,13 @@ for i in range(3):
     pred = (prob > 0.4).astype(np.uint8)
     gt = mask[0].numpy().astype(np.uint8)
 
-    img_np = (img.permute(1, 2, 0).numpy() * 255).astype(np.uint8)
+    mean = np.array([0.485, 0.456, 0.406])
+    std  = np.array([0.229, 0.224, 0.225])
+
+    img_np = img.permute(1, 2, 0).numpy()
+    img_np = (img_np * std) + mean
+    img_np = np.clip(img_np, 0, 1)
+    img_np = (img_np * 255).astype(np.uint8)
 
     overlay = img_np.copy()
     overlay[gt == 1] = [255, 0, 0]
@@ -251,4 +257,4 @@ for i in range(3):
     cv2.imwrite(f"{PRED_DIR}/sample_{i+1}_pred.png", pred * 255)
     cv2.imwrite(f"{PRED_DIR}/sample_{i+1}_overlay.png", cv2.cvtColor(overlay, cv2.COLOR_RGB2BGR))
 
-print(f" Saved 3 prediction samples in {PRED_DIR}/")
+print(f" Saved 10 prediction samples in {PRED_DIR}/")
