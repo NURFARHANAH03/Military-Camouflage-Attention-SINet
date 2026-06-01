@@ -21,7 +21,7 @@ TOP_LOGO_SIZE = (280, 180)      # picture4
 SMALL_LOGO_SIZE = (180, 100)    # picture1, picture2
 FOOTER_ICON_SIZE = (60, 60)     # picture3
 HERO_IMAGE_SIZE = (650, 450)    # picture5
-UPLOAD_ICON_SIZE = (180, 180)   # picture6
+UPLOAD_ICON_SIZE = (130, 130)   # picture6
 TIPS_ICON_SIZE = (60, 60)       # picture7
 HOME_ICON_SIZE = (40, 40)       # picture8
 
@@ -76,18 +76,30 @@ st.markdown("""
 
 .topbar {
     background-color: #1f4328;
-    padding: 18px 28px;
     color: white;
     font-size: 24px;
     font-weight: 500;
+    height: 110px;
+    display: flex;
+    align-items: center;
+    padding: 0 28px;
+    gap: 18px;
+}
+
+.nav-sep {
+    margin: 0 10px;
 }
 
 .brand-box {
     background-color: #6d7f2b;
-    padding: 18px;
-    text-align: center;
-    font-size: 38px;
+    height: 110px;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    font-size: 34px;
     font-weight: 800;
+    white-space: nowrap;
+    min-width: 320px;
 }
 
 .blue-text {
@@ -132,9 +144,15 @@ st.markdown("""
 
 .upload-frame {
     border: 4px dashed #6d7f2b;
-    padding: 45px;
+    padding: 65px 45px;
+    min-height: 320px;
     text-align: center;
     border-radius: 6px;
+
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
 }
 
 .tips-box {
@@ -144,6 +162,35 @@ st.markdown("""
     border-radius: 35px;
     font-size: 18px;
 }
+
+.upload-center {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+}
+
+[data-testid="stFileUploader"] {
+    width: 100% !important;
+}
+
+[data-testid="stFileUploader"] > div {
+    width: 100% !important;
+}
+
+.nav-link {
+    color: white !important;
+    text-decoration: none !important;
+}
+
+.nav-link:hover {
+    color: white !important;
+    text-decoration: underline !important;
+}
+
+.nav-link:visited {
+    color: white !important;
+}  
 
 .image-frame {
     background-color: #6d7f2b;
@@ -187,22 +234,26 @@ st.session_state.page = page
 # HEADER
 # =====================================================
 def top_navigation():
-    col1, col2 = st.columns([3, 1])
+    col1, col2 = st.columns([2.7, 1.3], gap=None)
 
     with col1:
         icon_html = ""
         if PICTURE_8:
             ext = os.path.splitext(PICTURE_8)[1].lower().replace(".", "")
-            icon_html = f"""
-            <img src="data:image/{ext};base64,{image_to_base64(PICTURE_8)}"
-            width="40" style="vertical-align:middle; margin-right:15px;">
-            """
+            icon_html = f'<img src="data:image/{ext};base64,{image_to_base64(PICTURE_8)}" width="40" style="vertical-align:middle; margin-right:12px;">'
 
         st.markdown(
             f"""
             <div class="topbar">
-            {icon_html}
-            Home &nbsp;&nbsp; | &nbsp;&nbsp; Universiti Teknologi PETRONAS &nbsp;&nbsp; | &nbsp;&nbsp; STRIDE
+                {icon_html}
+                <a href="?page=Home"
+                    class="nav-link">
+                    Home
+                </a>
+                <span class="nav-sep">|</span>
+                <span>Universiti Teknologi PETRONAS</span>
+                <span class="nav-sep">|</span>
+                <span>STRIDE</span>
             </div>
             """,
             unsafe_allow_html=True
@@ -211,8 +262,8 @@ def top_navigation():
     with col2:
         st.markdown(
             """
-            <div class='margin-top:45px;'></div>
-            <span class="blue-text">STRIDE</span><span class="gold-text">Vision</span>
+            <div class="brand-box">
+                <span class="blue-text">STRIDE</span><span class="gold-text">Vision</span>
             </div>
             """,
             unsafe_allow_html=True
@@ -340,49 +391,88 @@ elif page == "Detection":
     top_navigation()
 
     st.markdown(
-        "<h1 style='text-align:center; color:#1f4328; font-size:48px;'>Upload Image</h1>",
+        "<h1 style='text-align:center; color:#1f4328; font-size:38px;'>Upload Image</h1>",
         unsafe_allow_html=True
     )
 
-    st.markdown("<div class='upload-frame'>", unsafe_allow_html=True)
+    # Center whole upload area
+    left_space, upload_col, right_space = st.columns([1, 2.4, 1])
 
-    if PICTURE_6:
-        st.image(
-            resize_image(PICTURE_6, UPLOAD_ICON_SIZE),
-            use_container_width=False
-        )
+    with upload_col:
 
-    uploaded_file = st.file_uploader(
-        "Drag & Drop or browse",
-        type=["jpg", "jpeg", "png"]
-    )
+        upload_box = st.container(border=True)
 
-    st.markdown("</div>", unsafe_allow_html=True)
-
-    if uploaded_file is not None:
-        st.session_state["uploaded_file"] = uploaded_file
-        st.success("Image uploaded successfully.")
-        st.image(uploaded_file, caption="Uploaded Image Preview", width=350)
-
-        if st.button("Run Detection", use_container_width=True):
-            st.session_state["detection_done"] = True
-            st.success("Detection completed. Please open the Results page.")
-
-    st.write("")
-
-    tip_col1, tip_col2 = st.columns([0.1, 1])
-
-    with tip_col1:
-        if PICTURE_7:
-            st.image(
-                resize_image(PICTURE_7, TIPS_ICON_SIZE),
-                use_container_width=False
+        with upload_box:
+            st.markdown(
+                """
+                <style>
+                div[data-testid="stVerticalBlockBorderWrapper"] {
+                    border: 3px dashed #6d7f2b !important;
+                    border-radius: 4px !important;
+                    min-height: 420px !important;
+                    padding-top: 80px !important;
+                    padding-left: 80px !important;
+                    padding-right: 80px !important;
+                }
+                </style>
+                """,
+                unsafe_allow_html=True
             )
 
-    with tip_col2:
-        st.markdown(
+            center_left, center_mid, center_right = st.columns([1, 1, 1])
+
+            with center_mid:
+
+                st.markdown('<div class="upload-center">', unsafe_allow_html=True)
+
+                if PICTURE_6:
+                    st.image(
+                        resize_image(PICTURE_6, UPLOAD_ICON_SIZE),
+                        use_container_width=False
+                    )
+
+                uploaded_file = st.file_uploader(
+                    "Drag & Drop or browse",
+                    type=["jpg", "jpeg", "png"]
+                )
+
+                st.markdown('</div>', unsafe_allow_html=True)
+
+        if uploaded_file is not None:
+            st.session_state["uploaded_file"] = uploaded_file
+            st.success("Image uploaded successfully.")
+
+            st.image(
+                uploaded_file,
+                caption="Uploaded Image Preview",
+                width=300
+            )
+
+            if st.button("Run Detection", use_container_width=True):
+                st.session_state["detection_done"] = True
+                st.session_state.page = "Results"
+                st.rerun()
+
+    # Tips section
+    tip_left, tip_mid, tip_right = st.columns([1, 2, 1])
+
+    with tip_mid:
+        tip_icon_html = ""
+
+        if PICTURE_7:
+            ext = os.path.splitext(PICTURE_7)[1].lower().replace(".", "")
+            tip_icon_html = f"""
+            <img src="data:image/{ext};base64,{image_to_base64(PICTURE_7)}"
+            width="55"
+            style="vertical-align:middle; margin-right:8px;">
             """
-            <h3 style="color:#1f4328;">Tips for best results</h3>
+
+        st.markdown(
+            f"""
+            <h3 style="color:#1f4328;">
+                {tip_icon_html} Tips for best results
+            </h3>
+
             <div class="tips-box">
             <ul>
                 <li>Upload a clear RGB image (.jpg, .jpeg, .png).</li>
