@@ -1,10 +1,13 @@
 import os
 import base64
+import io
 import streamlit as st
 from PIL import Image
 import numpy as np
+import torch
+import torch.nn.functional as F
 
-from PIL import Image
+from models.sinet_gra import SINet_GRA
 
 def resize_image(path, size):
     if path:
@@ -40,6 +43,12 @@ st.set_page_config(
 BASE_DIR = r"C:\Users\User\Documents\fyp_military"
 IMAGE_DIR = os.path.join(BASE_DIR, "external_image")
 
+# Model checkpoint path
+# Put sinet_gra_best.pth inside: C:\Users\User\Documents\fyp_military\checkpoints
+MODEL_PATH = os.path.join(BASE_DIR, "checkpoints", "sinet_gra_best.pth")
+IMG_SIZE = 320
+MASK_THRESHOLD = 0.4
+
 def get_image(name):
     for ext in [".png", ".jpg", ".jpeg"]:
         path = os.path.join(IMAGE_DIR, name + ext)
@@ -59,6 +68,79 @@ PICTURE_5 = get_image("picture5")
 PICTURE_6 = get_image("picture6")
 PICTURE_7 = get_image("picture7")
 PICTURE_8 = get_image("picture8")
+
+
+# =====================================================
+# SINet + GRA MODEL INFERENCE
+# =====================================================
+@st.cache_resource
+def load_sinet_gra_model():
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    if not os.path.exists(MODEL_PATH):
+        st.error(f"Model checkpoint not found: {MODEL_PATH}")
+        st.stop()
+
+    # pretrained=False avoids downloading ResNet weights during app runtime.
+    model = SINet_GRA(pretrained=False).to(device)
+
+    try:
+        state_dict = torch.load(MODEL_PATH, map_location=device, weights_only=True)
+    except TypeError:
+        state_dict = torch.load(MODEL_PATH, map_location=device)
+
+    model.load_state_dict(state_dict)
+    model.eval()
+    return model, device
+
+
+def preprocess_image_for_model(image: Image.Image):
+    """Resize + normalize exactly like training ImageNet preprocessing."""
+    image = image.convert("RGB")
+    original_size = image.size  # (width, height)
+
+    resized = image.resize((IMG_SIZE, IMG_SIZE))
+    img_np = np.array(resized).astype(np.float32) / 255.0
+
+    mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
+    std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
+    img_np = (img_np - mean) / std
+
+    tensor = torch.from_numpy(img_np).permute(2, 0, 1).unsqueeze(0).float()
+    return tensor, original_size
+
+
+def run_sinet_gra_detection(image: Image.Image):
+    model, device = load_sinet_gra_model()
+    input_tensor, original_size = preprocess_image_for_model(image)
+    input_tensor = input_tensor.to(device)
+
+    with torch.no_grad():
+        logits = model(input_tensor)
+        probs = torch.sigmoid(logits)
+
+        # Resize prediction back to uploaded image size for nicer display.
+        probs = F.interpolate(
+            probs,
+            size=(original_size[1], original_size[0]),
+            mode="bilinear",
+            align_corners=False
+        )
+
+    prob_np = probs[0, 0].detach().cpu().numpy()
+    mask_np = (prob_np > MASK_THRESHOLD).astype(np.uint8) * 255
+
+    # Confidence: average probability inside detected mask.
+    detected_pixels = prob_np[mask_np > 0]
+    if detected_pixels.size > 0:
+        confidence = float(detected_pixels.mean() * 100)
+    else:
+        confidence = float(prob_np.max() * 100)
+
+    mask_area_ratio = float((mask_np > 0).mean())
+    status = "DETECTED" if mask_area_ratio > 0.001 and confidence >= 50 else "NOT DETECTED"
+
+    return mask_np, confidence, status, mask_area_ratio
 
 # =====================================================
 # CSS
@@ -439,16 +521,26 @@ elif page == "Detection":
                 st.markdown('</div>', unsafe_allow_html=True)
 
         if uploaded_file is not None:
-            st.session_state["uploaded_file"] = uploaded_file
+            uploaded_bytes = uploaded_file.getvalue()
+            st.session_state["uploaded_image_bytes"] = uploaded_bytes
+            st.session_state["uploaded_image_name"] = uploaded_file.name
             st.success("Image uploaded successfully.")
 
+            preview_image = Image.open(io.BytesIO(uploaded_bytes)).convert("RGB")
             st.image(
-                uploaded_file,
+                preview_image,
                 caption="Uploaded Image Preview",
                 width=300
             )
 
             if st.button("Run Detection", use_container_width=True):
+                with st.spinner("Running SINet + GRA detection..."):
+                    mask_np, confidence, status, mask_area_ratio = run_sinet_gra_detection(preview_image)
+
+                st.session_state["prediction_mask"] = mask_np
+                st.session_state["confidence"] = confidence
+                st.session_state["status"] = status
+                st.session_state["mask_area_ratio"] = mask_area_ratio
                 st.session_state["detection_done"] = True
                 st.session_state.page = "Results"
                 st.rerun()
@@ -494,7 +586,8 @@ elif page == "Results":
 
     top_navigation()
 
-    uploaded_file = st.session_state.get("uploaded_file", None)
+    uploaded_image_bytes = st.session_state.get("uploaded_image_bytes", None)
+    prediction_mask = st.session_state.get("prediction_mask", None)
 
     col1, col2 = st.columns(2)
 
@@ -505,8 +598,8 @@ elif page == "Results":
         )
         st.markdown("<div class='image-frame'>", unsafe_allow_html=True)
 
-        if uploaded_file is not None:
-            image = Image.open(uploaded_file).convert("RGB")
+        if uploaded_image_bytes is not None:
+            image = Image.open(io.BytesIO(uploaded_image_bytes)).convert("RGB")
             st.image(image, use_container_width=True)
         elif PICTURE_5:
             st.image(PICTURE_5, use_container_width=True)
@@ -520,10 +613,8 @@ elif page == "Results":
         )
         st.markdown("<div class='image-frame'>", unsafe_allow_html=True)
 
-        if uploaded_file is not None:
-            dummy_mask = np.zeros((320, 320), dtype=np.uint8)
-            dummy_mask[90:240, 120:230] = 255
-            st.image(dummy_mask, clamp=True, use_container_width=True)
+        if prediction_mask is not None:
+            st.image(prediction_mask, clamp=True, use_container_width=True)
         elif PICTURE_5:
             st.image(PICTURE_5, use_container_width=True)
 
@@ -531,13 +622,12 @@ elif page == "Results":
 
     st.write("")
 
-    confidence = 88.7
+    confidence = st.session_state.get("confidence", 0.0)
+    status = st.session_state.get("status", "NOT DETECTED")
 
-    if confidence >= 50:
-        status = "DETECTED"
+    if status == "DETECTED":
         color = "#62ff5f"
     else:
-        status = "NOT DETECTED"
         color = "#ff3b3b"
 
     st.markdown(
@@ -553,7 +643,7 @@ elif page == "Results":
                 </div>
                 <div>
                     Detection Confidence:<br>
-                    <span style="font-size:42px; color:{color};">{confidence}%</span><br>
+                    <span style="font-size:42px; color:{color};">{confidence:.2f}%</span><br>
                     Status:<br>
                     <span style="font-size:42px; color:{color};">{status}</span>
                 </div>
