@@ -590,11 +590,77 @@ elif page == "About":
     - Provide a simple web-based interface for image analysis.
     """)
 
-    st.subheader("Model Performance")
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Model", "SINet + GRA")
-    c2.metric("Dice Score", "0.8671")
-    c3.metric("IoU Score", "0.7874")
+    st.markdown("---")
+
+    st.markdown(
+        "<h1 style='color:#00508c;'>Project Supervisor</h1>",
+        unsafe_allow_html=True
+    )
+
+    col1, col2 = st.columns([1,4])
+
+    with col1:
+        st.markdown("""
+        <div style="
+            width:120px;
+            height:120px;
+            border-radius:50%;
+            background:linear-gradient(135deg,#1f5f7a,#c89b3c);
+            display:flex;
+            align-items:center;
+            justify-content:center;
+            color:white;
+            font-size:42px;
+            font-weight:bold;
+            text-align:center;">
+            NY
+        </div>
+        """, unsafe_allow_html=True)
+
+    with col2:
+        st.markdown("### Dr Norashikin Bt Yahya")
+        st.write("Faculty Supervisor")
+
+        st.link_button(
+            "LinkedIn Profile",
+            "https://www.linkedin.com/in/norashikin-yahya-0a78a531"
+        )
+
+    st.markdown(
+        "<h1 style='color:#00508c;'>Project Developer</h1>",
+        unsafe_allow_html=True
+    )
+
+    col1, col2 = st.columns([1,4])
+
+    with col1:
+        st.markdown("""
+        <div style="
+            width:120px;
+            height:120px;
+            border-radius:50%;
+            background:linear-gradient(135deg,#1f5f7a,#c89b3c);
+            display:flex;
+            align-items:center;
+            justify-content:center;
+            color:white;
+            font-size:42px;
+            font-weight:bold;
+            text-align:center;">
+            NA
+        </div>
+        """, unsafe_allow_html=True)
+
+    with col2:
+        st.markdown("### Nurfarhanah Amirah Binti Muhammad Nadzri")
+        st.write("Final Year Project Developer")
+
+        st.link_button(
+            "LinkedIn Profile",
+            "https://www.linkedin.com/in/nurfarhanah-amirah-61261b283"
+        )
+
+    st.markdown("---")
 
     st.subheader("Collaboration")
     st.write("""
