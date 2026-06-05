@@ -1,6 +1,9 @@
 import os
 import base64
 import io
+import tempfile
+import cv2
+import pandas as pd
 import streamlit as st
 from PIL import Image
 import numpy as np
@@ -141,6 +144,66 @@ def run_sinet_gra_detection(image: Image.Image):
     status = "DETECTED" if mask_area_ratio > 0.001 and confidence >= 50 else "NOT DETECTED"
 
     return mask_np, confidence, status, mask_area_ratio
+
+def process_video_every_2_seconds(video_bytes):
+    """
+    Extract frames every 2 seconds from uploaded video,
+    then run SINet + GRA detection on each frame.
+    """
+
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as temp_video:
+        temp_video.write(video_bytes)
+        temp_video_path = temp_video.name
+
+    cap = cv2.VideoCapture(temp_video_path)
+
+    if not cap.isOpened():
+        os.remove(temp_video_path)
+        return []
+
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+
+    if fps <= 0:
+        cap.release()
+        os.remove(temp_video_path)
+        return []
+
+    duration = frame_count / fps
+    results = []
+
+    current_time = 0
+
+    while current_time <= duration:
+        cap.set(cv2.CAP_PROP_POS_MSEC, current_time * 1000)
+
+        ret, frame = cap.read()
+
+        if not ret:
+            break
+
+        # OpenCV reads as BGR, convert to RGB
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        frame_image = Image.fromarray(frame_rgb)
+
+        # Reuse your existing image detection function
+        mask_np, confidence, status, mask_area_ratio = run_sinet_gra_detection(frame_image)
+
+        results.append({
+            "time": current_time,
+            "frame": frame_image,
+            "mask": mask_np,
+            "confidence": confidence,
+            "status": status,
+            "mask_area_ratio": mask_area_ratio
+        })
+
+        current_time += 2
+
+    cap.release()
+    os.remove(temp_video_path)
+
+    return results
 
 # =====================================================
 # CSS
@@ -473,7 +536,7 @@ elif page == "Detection":
     top_navigation()
 
     st.markdown(
-        "<h1 style='text-align:center; color:#1f4328; font-size:38px;'>Upload Image</h1>",
+        "<h1 style='text-align:center; color:#1f4328; font-size:38px;'>Upload Image or Video</h1>",
         unsafe_allow_html=True
     )
 
@@ -513,37 +576,72 @@ elif page == "Detection":
                         use_container_width=False
                     )
 
-                uploaded_file = st.file_uploader(
-                    "Drag & Drop or browse",
-                    type=["jpg", "jpeg", "png"]
+                input_mode = st.radio(
+                    "Select input type",
+                    ["Image", "Video"],
+                    horizontal=True
                 )
+
+                if input_mode == "Image":
+                    uploaded_file = st.file_uploader(
+                        "Drag & Drop or browse image",
+                        type=["jpg", "jpeg", "png"]
+                    )
+                else:
+                    uploaded_file = st.file_uploader(
+                        "Drag & Drop or browse video",
+                        type=["mp4", "avi", "mov"]
+                    )
 
                 st.markdown('</div>', unsafe_allow_html=True)
 
         if uploaded_file is not None:
             uploaded_bytes = uploaded_file.getvalue()
-            st.session_state["uploaded_image_bytes"] = uploaded_bytes
-            st.session_state["uploaded_image_name"] = uploaded_file.name
-            st.success("Image uploaded successfully.")
 
-            preview_image = Image.open(io.BytesIO(uploaded_bytes)).convert("RGB")
-            st.image(
-                preview_image,
-                caption="Uploaded Image Preview",
-                width=300
-            )
+            if input_mode == "Image":
+                st.session_state["input_mode"] = "Image"
+                st.session_state["uploaded_image_bytes"] = uploaded_bytes
+                st.session_state["uploaded_image_name"] = uploaded_file.name
 
-            if st.button("Run Detection", use_container_width=True):
-                with st.spinner("Running SINet + GRA detection..."):
-                    mask_np, confidence, status, mask_area_ratio = run_sinet_gra_detection(preview_image)
+                st.success("Image uploaded successfully.")
 
-                st.session_state["prediction_mask"] = mask_np
-                st.session_state["confidence"] = confidence
-                st.session_state["status"] = status
-                st.session_state["mask_area_ratio"] = mask_area_ratio
-                st.session_state["detection_done"] = True
-                st.session_state.page = "Results"
-                st.rerun()
+                preview_image = Image.open(io.BytesIO(uploaded_bytes)).convert("RGB")
+                st.image(
+                    preview_image,
+                    caption="Uploaded Image Preview",
+                    width=300
+                )
+
+                if st.button("Run Image Detection", use_container_width=True):
+                    with st.spinner("Running SINet + GRA detection..."):
+                        mask_np, confidence, status, mask_area_ratio = run_sinet_gra_detection(preview_image)
+
+                    st.session_state["prediction_mask"] = mask_np
+                    st.session_state["confidence"] = confidence
+                    st.session_state["status"] = status
+                    st.session_state["mask_area_ratio"] = mask_area_ratio
+                    st.session_state["detection_done"] = True
+                    st.session_state.page = "Results"
+                    st.rerun()
+
+            else:
+                st.session_state["input_mode"] = "Video"
+                st.session_state["uploaded_video_bytes"] = uploaded_bytes
+                st.session_state["uploaded_video_name"] = uploaded_file.name
+
+                st.success("Video uploaded successfully.")
+                st.video(uploaded_bytes)
+
+                st.info("The system will process one frame every 2 seconds.")
+
+                if st.button("Run Video Detection", use_container_width=True):
+                    with st.spinner("Processing video frames every 2 seconds using SINet + GRA..."):
+                        video_results = process_video_every_2_seconds(uploaded_bytes)
+
+                    st.session_state["video_results"] = video_results
+                    st.session_state["detection_done"] = True
+                    st.session_state.page = "Results"
+                    st.rerun()
 
     # Tips section
     tip_left, tip_mid, tip_right = st.columns([1, 2, 1])
@@ -567,7 +665,8 @@ elif page == "Detection":
 
             <div class="tips-box">
             <ul>
-                <li>Upload a clear RGB image (.jpg, .jpeg, .png).</li>
+                <li>Upload a clear RGB image or video (.jpg, .jpeg, .png, .mp4, .avi, .mov).</li>
+                <li>For video input, the system processes one frame every 2 seconds.</li>
                 <li>Ensure the camouflaged soldier occupies a reasonable portion of the image.</li>
                 <li>Use images with good lighting conditions.</li>
                 <li>Keep the target within the main field of view.</li>
@@ -585,6 +684,104 @@ elif page == "Detection":
 elif page == "Results":
 
     top_navigation()
+
+    input_mode = st.session_state.get("input_mode", "Image")
+
+    if input_mode == "Video":
+        video_results = st.session_state.get("video_results", [])
+
+        st.markdown(
+            "<h1 style='text-align:center; color:#1f4328;'>Video Detection Results</h1>",
+            unsafe_allow_html=True
+        )
+
+        if len(video_results) == 0:
+            st.warning("No video frames were processed.")
+            st.stop()
+
+        # Summary table
+        summary_data = []
+        for result in video_results:
+            summary_data.append({
+                "Timestamp (s)": f"{result['time']:.0f}s",
+                "Confidence (%)": f"{result['confidence']:.2f}",
+                "Status": result["status"]
+            })
+
+        st.dataframe(pd.DataFrame(summary_data), use_container_width=True)
+
+        detected_count = sum(1 for r in video_results if r["status"] == "DETECTED")
+        total_count = len(video_results)
+        avg_confidence = sum(r["confidence"] for r in video_results) / total_count
+
+        overall_status = "DETECTED" if detected_count > 0 else "NOT DETECTED"
+        overall_color = "#62ff5f" if overall_status == "DETECTED" else "#ff3b3b"
+
+        st.markdown(
+            f"""
+            <div class="result-card">
+                <div style="display:flex; justify-content:space-between; gap:40px;">
+                    <div>
+                        Model: SINet + GRA<br>
+                        Video Sampling: Every 2 seconds<br>
+                        Processed Frames: {total_count}<br>
+                        Detected Frames: {detected_count}
+                    </div>
+                    <div>
+                        Average Confidence:<br>
+                        <span style="font-size:42px; color:{overall_color};">{avg_confidence:.2f}%</span><br>
+                        Overall Status:<br>
+                        <span style="font-size:42px; color:{overall_color};">{overall_status}</span>
+                    </div>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+
+        st.write("")
+
+        for result in video_results:
+            st.markdown(
+                f"<h2 style='color:#1f4328;'>Frame at {result['time']:.0f} seconds</h2>",
+                unsafe_allow_html=True
+            )
+
+
+            col1, col2 = st.columns(2)
+
+            with col1:
+                st.markdown(
+                    "<h3 style='text-align:center; color:#1f4328;'>Original Frame</h3>",
+                    unsafe_allow_html=True
+                )
+                st.image(result["frame"], use_container_width=True)
+
+            with col2:
+                st.markdown(
+                    "<h3 style='text-align:center; color:#1f4328;'>Prediction Mask</h3>",
+                    unsafe_allow_html=True
+                )
+                st.image(result["mask"], clamp=True, use_container_width=True)
+
+            color = "#62ff5f" if result["status"] == "DETECTED" else "#ff3b3b"
+
+            st.markdown(
+                f"""
+                <div class="result-card">
+                    Detection Confidence:
+                    <span style="color:{color};">{result['confidence']:.2f}%</span>
+                    &nbsp;&nbsp; | &nbsp;&nbsp;
+                    Status:
+                    <span style="color:{color};">{result['status']}</span>
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
+
+            st.write("")
+
+        st.stop()    
 
     uploaded_image_bytes = st.session_state.get("uploaded_image_bytes", None)
     prediction_mask = st.session_state.get("prediction_mask", None)
