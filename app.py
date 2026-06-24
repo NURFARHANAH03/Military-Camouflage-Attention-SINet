@@ -35,7 +35,7 @@ HOME_ICON_SIZE = (40, 40)       # picture8
 # PAGE CONFIG
 # =====================================================
 st.set_page_config(
-    page_title="STRIDE Vision",
+    page_title="CAMOU Vision",
     page_icon="🎯",
     layout="wide"
 )
@@ -408,7 +408,7 @@ def top_navigation():
         st.markdown(
             """
             <div class="brand-box">
-                <span class="blue-text">STRIDE</span><span class="gold-text">Vision</span>
+                <span class="blue-text">CAMOU</span><span class="gold-text">Vision</span>
             </div>
             """,
             unsafe_allow_html=True
@@ -440,7 +440,7 @@ if page == "Home":
         st.markdown(
             """
             <h1 style="font-size:72px; margin-top:10px;">
-                <span style="color:#143f8f;">STRIDE</span><span style="color:#c89b3c;">Vision</span>
+                <span style="color:#143f8f;">CAMOU</span><span style="color:#c89b3c;">Vision</span>
             </h1>
             <hr style="border:2px solid #143f8f; width:70%; margin-left:0;">
             """,
@@ -858,12 +858,12 @@ elif page == "About":
     top_navigation()
 
     st.markdown(
-        "<h1 style='color:#1f4328;'>About STRIDE Vision</h1>",
+        "<h1 style='color:#1f4328;'>About CAMO Vision</h1>",
         unsafe_allow_html=True
     )
 
     st.write("""
-    STRIDE Vision is an AI-powered military camouflage detection system
+    CAMO Vision is an AI-powered military camouflage detection system
     developed to identify camouflaged military personnel in complex natural
     environments. The system uses a deep learning segmentation model to
     highlight potential hidden targets from uploaded images.
