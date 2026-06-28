@@ -20,8 +20,8 @@ pin_memory = True
 EPOCHS = 30
 LR = 5e-5
 
-SAVE_DIR = "checkpoints"
-PRED_DIR = "pred_samples_sinet_gra"
+SAVE_DIR = "checkpoints_combined"
+PRED_DIR = "pred_samples_sinet_gra_combined"
 
 os.makedirs(SAVE_DIR, exist_ok=True)
 os.makedirs(PRED_DIR, exist_ok=True)
@@ -29,8 +29,8 @@ os.makedirs(PRED_DIR, exist_ok=True)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print("Using device:", device)
 
-IMG_DIR = "mc_dataset_cropped/images"
-MASK_DIR = "mc_dataset_cropped/masks"
+IMG_DIR = "combined_dataset/images"
+MASK_DIR = "combined_dataset/masks"
 
 # -----------------------
 # Dataset + Split

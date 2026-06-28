@@ -48,7 +48,11 @@ IMAGE_DIR = os.path.join(BASE_DIR, "external_image")
 
 # Model checkpoint path
 # Put sinet_gra_best.pth inside: C:\Users\User\Documents\fyp_military\checkpoints
-MODEL_PATH = os.path.join(BASE_DIR, "checkpoints", "sinet_gra_best.pth")
+MODEL_PATH = os.path.join(
+    BASE_DIR,
+    "checkpoints_combined",
+    "sinet_gra_best.pth"
+)
 IMG_SIZE = 320
 MASK_THRESHOLD = 0.4
 
@@ -834,9 +838,9 @@ elif page == "Results":
                 <div>
                     Model: SINet + GRA<br>
                     Validation Dice Score:
-                    <span style="color:#62ff5f;">0.8671</span><br>
+                    <span style="color:#62ff5f;">0.8650</span><br>
                     Validation IoU Score:
-                    <span style="color:#62ff5f;">0.7874</span>
+                    <span style="color:#62ff5f;">0.7808</span>
                 </div>
                 <div>
                     Detection Confidence:<br>
