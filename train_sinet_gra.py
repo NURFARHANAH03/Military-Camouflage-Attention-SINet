@@ -71,6 +71,14 @@ val_loader = DataLoader(
     pin_memory=pin_memory
 )
 
+test_loader = DataLoader(
+    test_set,
+    batch_size=BATCH_SIZE,
+    shuffle=False,
+    num_workers=0,
+    pin_memory=pin_memory
+)
+
 print(f"Total: {n_total} | Train: {len(train_set)} | Val: {len(val_set)} | Test: {len(test_set)}")
 
 # -----------------------
@@ -88,7 +96,8 @@ scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
     patience=3       # wait 3 epochs before reducing
 )
 
-train_losses, val_losses, val_dices = [], [], []
+train_losses, val_losses = [], []
+train_dices, val_dices = [], []
 best_val_dice = -1
 
 
@@ -132,6 +141,7 @@ torch.cuda.empty_cache()
 for epoch in range(1, EPOCHS + 1):
     model.train()
     running_loss = 0.0
+    running_train_dice = 0.0
 
     for imgs, masks in train_loader:
         imgs, masks = imgs.to(device), masks.to(device)
@@ -142,6 +152,8 @@ for epoch in range(1, EPOCHS + 1):
         bce = bce_logits(out, masks)
         probs = torch.sigmoid(out)
         d = dice_loss(probs, masks)
+        preds_bin = (probs > 0.5).float()
+        running_train_dice += dice_score(preds_bin, masks)
 
         loss = bce + d
 
@@ -153,7 +165,10 @@ for epoch in range(1, EPOCHS + 1):
         running_loss += loss.item()
 
     avg_train = running_loss / max(1, len(train_loader))
+    avg_train_dice = running_train_dice / max(1, len(train_loader))
+
     train_losses.append(avg_train)
+    train_dices.append(avg_train_dice)
 
     # -----------------------
     # Validation
@@ -193,6 +208,7 @@ for epoch in range(1, EPOCHS + 1):
     print(
         f"Epoch {epoch}/{EPOCHS} | "
         f"Train Loss: {avg_train:.4f} | "
+        f"Train Dice: {avg_train_dice:.4f} | "
         f"Val Loss: {avg_val:.4f} | "
         f"Val Dice: {avg_dice:.4f} | "
         f"Val IoU: {avg_iou:.4f}"
@@ -218,8 +234,22 @@ plt.savefig(os.path.join(SAVE_DIR, "sinet_gra_loss_curve.png"))
 print(" Saved loss curve:", os.path.join(SAVE_DIR, "sinet_gra_loss_curve.png"))
 
 # -----------------------
-# Save 3 prediction samples
+# Save Train vs Validation Dice Curve
 # -----------------------
+plt.figure()
+plt.plot(train_dices, label="Train Dice")
+plt.plot(val_dices, label="Validation Dice")
+plt.xlabel("Epoch")
+plt.ylabel("Dice Score")
+plt.legend()
+plt.title("SINet + GRA Train vs Validation Dice Curve")
+plt.tight_layout()
+plt.savefig(os.path.join(SAVE_DIR, "sinet_gra_dice_curve.png"))
+print(" Saved Dice curve:", os.path.join(SAVE_DIR, "sinet_gra_dice_curve.png"))
+
+# ------------------------------------------
+# Load Best Model for Final Test Evaluation
+# ------------------------------------------
 model.load_state_dict(
     torch.load(
         os.path.join(SAVE_DIR, "sinet_gra_best.pth"),
@@ -228,6 +258,40 @@ model.load_state_dict(
     )
 )
 model.eval()
+
+# -----------------------
+# Final Test Set Evaluation
+# -----------------------
+test_loss_total = 0.0
+test_dice_total = 0.0
+test_iou_total = 0.0
+
+with torch.no_grad():
+    for imgs, masks in test_loader:
+        imgs = imgs.to(device)
+        masks = masks.to(device).float()
+
+        out = model(imgs)
+
+        bce = bce_logits(out, masks)
+        probs = torch.sigmoid(out)
+        d_loss = dice_loss(probs, masks)
+
+        test_loss = bce + d_loss
+        test_loss_total += test_loss.item()
+
+        preds_bin = (probs > 0.5).float()
+        test_dice_total += dice_score(preds_bin, masks)
+        test_iou_total += iou_score(preds_bin, masks)
+
+avg_test_loss = test_loss_total / max(1, len(test_loader))
+avg_test_dice = test_dice_total / max(1, len(test_loader))
+avg_test_iou = test_iou_total / max(1, len(test_loader))
+
+print("\n========== FINAL TEST RESULTS ==========")
+print(f"Test Loss : {avg_test_loss:.4f}")
+print(f"Test Dice : {avg_test_dice:.4f}")
+print(f"Test IoU  : {avg_test_iou:.4f}")
 
 for i in range(10):
     img, mask = val_set[i]
