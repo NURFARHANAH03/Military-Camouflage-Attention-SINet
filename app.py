@@ -9,7 +9,11 @@ from PIL import Image
 import numpy as np
 import torch
 import torch.nn.functional as F
+import time
+import threading
+import av
 
+from streamlit_webrtc import webrtc_streamer, VideoProcessorBase
 from models.sinet_gra import SINet_GRA
 
 def resize_image(path, size):
@@ -209,6 +213,111 @@ def process_video_every_2_seconds(video_bytes):
 
     return results
 
+    # =====================================================
+    # LIVE WEBCAM DETECTION PROCESSOR
+    # =====================================================
+class CamouflageLiveProcessor(VideoProcessorBase):
+        """
+        Runs SINet + GRA inference once every second.
+        Intermediate webcam frames keep showing the latest prediction result.
+        """
+
+        def __init__(self, model, device, interval_seconds=1.0):
+            self.model = model
+            self.device = device
+            self.interval_seconds = interval_seconds
+
+            self.last_processed_time = 0.0
+            self.latest_mask = None
+            self.latest_confidence = 0.0
+            self.latest_status = "WAITING"
+            self.lock = threading.Lock()
+
+        def recv(self, frame):
+            # Convert incoming webcam frame to RGB NumPy image
+            frame_rgb = frame.to_ndarray(format="rgb24")
+            current_time = time.monotonic()
+
+            # Run model inference only once every 1 second
+            if current_time - self.last_processed_time >= self.interval_seconds:
+                pil_image = Image.fromarray(frame_rgb)
+
+                mask_np, confidence, status, _ = run_sinet_gra_detection(
+                    pil_image
+                )
+
+                with self.lock:
+                    self.latest_mask = mask_np
+                    self.latest_confidence = confidence
+                    self.latest_status = status
+                    self.last_processed_time = current_time
+
+            # Copy the current webcam frame for mask overlay
+            output_frame = frame_rgb.copy()
+
+            with self.lock:
+                mask = self.latest_mask
+                confidence = self.latest_confidence
+                status = self.latest_status
+
+            # Apply the latest predicted mask as a green overlay
+            if mask is not None:
+                if mask.shape[:2] != output_frame.shape[:2]:
+                    mask = cv2.resize(
+                        mask,
+                        (output_frame.shape[1], output_frame.shape[0]),
+                        interpolation=cv2.INTER_NEAREST
+                    )
+
+                detected_region = mask > 0
+
+                # Blend green segmentation mask on the live frame
+                output_frame[detected_region] = (
+                    0.55 * output_frame[detected_region]
+                    + 0.45 * np.array([0, 255, 0])
+                ).astype(np.uint8)
+
+            # Status colour
+            if status == "DETECTED":
+                label_color = (0, 255, 0)
+            elif status == "NOT DETECTED":
+                label_color = (255, 0, 0)
+            else:
+                label_color = (255, 255, 0)
+
+            # Add text directly on the webcam preview
+            cv2.putText(
+                output_frame,
+                f"Confidence: {confidence:.2f}%",
+                (20, 40),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.8,
+                label_color,
+                2
+            )
+
+            cv2.putText(
+                output_frame,
+                f"Status: {status}",
+                (20, 75),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.8,
+                label_color,
+                2
+            )
+
+            cv2.putText(
+                output_frame,
+                "Model updates every 1 second",
+                (20, 110),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.6,
+                (255, 255, 255),
+                2
+            )
+
+            return av.VideoFrame.from_ndarray(output_frame, format="rgb24")
+
 # =====================================================
 # CSS
 # =====================================================
@@ -346,6 +455,21 @@ st.markdown("""
     padding: 28px;
     border-radius: 38px;
     text-align: center;
+}
+            
+/* Green Live Detection button */
+.st-key-live_detection_btn button {
+    background-color: #2f7d32 !important;
+    color: white !important;
+    border: 2px solid #1f5c25 !important;
+    font-weight: 700 !important;
+    font-size: 14px !important;
+    white-space: nowrap !important;
+}
+
+.st-key-live_detection_btn button:hover {
+    background-color: #236126 !important;
+    color: white !important;
 }
 
 .result-card {
@@ -540,7 +664,7 @@ elif page == "Detection":
     top_navigation()
 
     st.markdown(
-        "<h1 style='text-align:center; color:#1f4328; font-size:38px;'>Upload Image or Video</h1>",
+        "<h1 style='text-align:center; color:#1f4328; font-size:38px;'>Upload Image, Video or Use Live Detection</h1>",
         unsafe_allow_html=True
     )
 
@@ -580,21 +704,66 @@ elif page == "Detection":
                         use_container_width=False
                     )
 
-                input_mode = st.radio(
-                    "Select input type",
-                    ["Image", "Video"],
-                    horizontal=True
-                )
+                # Default selected mode
+                if "selected_input_mode" not in st.session_state:
+                    st.session_state["selected_input_mode"] = "Image"
+
+                btn1, btn2, btn3 = st.columns([1.1, 1, 1.6])
+
+                with btn1:
+                    if st.button("Image", use_container_width=True, key="image_mode_btn"):
+                        st.session_state["selected_input_mode"] = "Image"
+
+                with btn2:
+                    if st.button("Video", use_container_width=True, key="video_mode_btn"):
+                        st.session_state["selected_input_mode"] = "Video"
+
+                with btn3:
+                    if st.button(
+                        "Live Detection",
+                        use_container_width=True,
+                        key="live_detection_btn"
+                    ):
+                        st.session_state["selected_input_mode"] = "Live Detection"
+
+                input_mode = st.session_state["selected_input_mode"]
+
+                uploaded_file = None
 
                 if input_mode == "Image":
                     uploaded_file = st.file_uploader(
                         "Drag & Drop or browse image",
-                        type=["jpg", "jpeg", "png"]
+                        type=["jpg", "jpeg", "png"],
+                        key="image_uploader"
                     )
-                else:
+
+                elif input_mode == "Video":
                     uploaded_file = st.file_uploader(
                         "Drag & Drop or browse video",
-                        type=["mp4", "avi", "mov"]
+                        type=["mp4", "avi", "mov"],
+                        key="video_uploader"
+                    )
+
+                elif input_mode == "Live Detection":
+                    st.info(
+                        "The live stream remains active while SINet + GRA updates "
+                        "the camouflage mask every 1 second."
+                    )
+
+                    model, device = load_sinet_gra_model()
+
+                    webrtc_streamer(
+                        key="camouflage_live_detection",
+                        video_processor_factory=lambda: CamouflageLiveProcessor(
+                            model=model,
+                            device=device,
+                            interval_seconds=1.0
+                        ),
+                        media_stream_constraints={
+                            "video": True,
+                            "audio": False
+                        },
+                        async_processing=True
                     )
 
                 st.markdown('</div>', unsafe_allow_html=True)
