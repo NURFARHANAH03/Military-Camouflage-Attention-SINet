@@ -1,0 +1,22 @@
+OVERALL PIXEL-LEVEL RESULTS
+===========================
+
+Model: Adapted SINet + GRA
+Test images: 253
+Threshold: 0.5
+
+Confusion Matrix:
+TN: 22,959,312
+FP: 223,954
+FN: 269,700
+TP: 2,454,234
+Total pixels: 25,907,200
+
+Metrics:
+Accuracy: 0.9809 (98.09%)
+Precision: 0.9164 (91.64%)
+Recall: 0.9010 (90.10%)
+F1-Score: 0.9086 (90.86%)
+Dice Score: 0.9086 (90.86%)
+IoU: 0.8325 (83.25%)
+Specificity: 0.9903 (99.03%)
