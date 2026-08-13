@@ -11,14 +11,21 @@ class ConvBlock(nn.Module):
         super().__init__()
         self.block = nn.Sequential(
             nn.Conv2d(in_ch, out_ch, 3, padding=1, bias=False),
-            nn.BatchNorm2d(out_ch),
+            nn.GroupNorm(8, out_ch),
             nn.ReLU(inplace=True)
         )
 
     def forward(self, x):
         return self.block(x)
 
+class PredHead(nn.Module):
+    def __init__(self, in_ch):
+        super().__init__()
+        self.head = nn.Conv2d(in_ch, 1, kernel_size=1)
 
+    def forward(self, feat):
+        return self.head(feat)
+    
 # -----------------------
 # Lightweight GRA Block
 # -----------------------
@@ -93,9 +100,11 @@ class SINet_GRA(nn.Module):
         # -------- Identification Module --------
         self.id_conv1 = ConvBlock(256 + 1024, 256)
         self.gra1 = GRABlock(256)
+        self.head1 = PredHead(256) 
 
         self.id_conv2 = ConvBlock(256 + 512, 128)
         self.gra2 = GRABlock(128)
+        self.head2 = PredHead(128)
 
         self.id_conv3 = ConvBlock(128 + 256, 64)
         self.gra3 = GRABlock(64)
@@ -133,8 +142,7 @@ class SINet_GRA(nn.Module):
         d1 = self.id_conv1(d1)
         d1 = self.gra1(d1, coarse)
 
-        # prediction after stage 1
-        p1 = self.out_intermediate(d1, x.shape[2:])
+        p1 = self.head1(d1)   # no resize needed — GRABlock interpolates internally
 
         # -------- Stage 2 --------
         d1 = F.interpolate(
@@ -149,7 +157,7 @@ class SINet_GRA(nn.Module):
         d2 = self.gra2(d2, p1)
 
         # prediction after stage 2
-        p2 = self.out_intermediate(d2, x.shape[2:])
+        p2 = self.head2(d2)
 
         # -------- Stage 3 --------
         d2 = F.interpolate(
@@ -175,15 +183,3 @@ class SINet_GRA(nn.Module):
         )
 
         return out
-
-    def out_intermediate(self, feat, output_size):
-        pred = feat.mean(dim=1, keepdim=True)
-
-        pred = F.interpolate(
-            pred,
-            size=output_size,
-            mode="bilinear",
-            align_corners=False
-        )
-
-        return pred

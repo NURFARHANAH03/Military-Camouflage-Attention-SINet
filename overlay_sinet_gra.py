@@ -11,7 +11,7 @@ from models.sinet_gra import SINet_GRA
 # CONFIG
 # =====================================================
 IMG_SIZE = 320
-THRESHOLD = 0.4
+THRESHOLD = 0.5
 
 IMG_DIR = "combined_dataset/images"
 MASK_DIR = "combined_dataset/masks"

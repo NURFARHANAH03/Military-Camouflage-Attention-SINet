@@ -4,11 +4,12 @@ import torch
 torch.cuda.empty_cache()
 import torch.nn as nn
 import numpy as np
-from torch.utils.data import DataLoader, random_split
+from torch.utils.data import DataLoader
 import matplotlib.pyplot as plt
 import cv2
 
 from dataset_loader import CamouflageDataset
+from group_split import create_group_split
 
 # When using Unet without pretrained
 #from models.unet import UNet  # make sure this path is correct
@@ -48,11 +49,11 @@ n_train = int(0.7 * n_total)
 n_val = int(0.15 * n_total)
 n_test = n_total - n_train - n_val
 
-# split indices only
-train_idx, val_idx, test_idx = random_split(
-    range(n_total),
-    [n_train, n_val, n_test],
-    generator=torch.Generator().manual_seed(42)
+train_indices, val_indices, test_indices = create_group_split(
+    image_files=full_dataset.images,
+    train_ratio=0.70,
+    val_ratio=0.15,
+    seed=42
 )
 
 # training dataset = augmentation ON
@@ -71,10 +72,20 @@ val_dataset = CamouflageDataset(
     augment=False
 )
 
-# apply same indices
-train_set = torch.utils.data.Subset(train_dataset, train_idx.indices)
-val_set   = torch.utils.data.Subset(val_dataset, val_idx.indices)
-test_set  = torch.utils.data.Subset(val_dataset, test_idx.indices)
+train_set = torch.utils.data.Subset(
+    train_dataset,
+    train_indices
+)
+
+val_set = torch.utils.data.Subset(
+    val_dataset,
+    val_indices
+)
+
+test_set = torch.utils.data.Subset(
+    val_dataset,
+    test_indices
+)
 
 # loaders
 train_loader = DataLoader(

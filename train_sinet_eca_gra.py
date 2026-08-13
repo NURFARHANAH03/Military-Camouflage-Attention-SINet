@@ -9,6 +9,7 @@ import matplotlib.pyplot as plt
 import cv2
 
 from dataset_loader import CamouflageDataset
+from group_split import create_group_split
 from models.sinet_eca_gra import SINet_ECA_GRA
 
 # -----------------------
@@ -42,18 +43,41 @@ n_train = int(0.7 * n_total)
 n_val = int(0.15 * n_total)
 n_test = n_total - n_train - n_val
 
-train_idx, val_idx, test_idx = random_split(
-    range(n_total),
-    [n_train, n_val, n_test],
-    generator=torch.Generator().manual_seed(42)
+train_indices, val_indices, test_indices = create_group_split(
+    image_files=full_dataset.images,
+    train_ratio=0.70,
+    val_ratio=0.15,
+    seed=42
 )
 
-train_dataset = CamouflageDataset(IMG_DIR, MASK_DIR, size=IMG_SIZE, augment=True)
-val_dataset = CamouflageDataset(IMG_DIR, MASK_DIR, size=IMG_SIZE, augment=False)
+train_dataset = CamouflageDataset(
+    IMG_DIR,
+    MASK_DIR,
+    size=IMG_SIZE,
+    augment=True
+)
 
-train_set = torch.utils.data.Subset(train_dataset, train_idx.indices)
-val_set = torch.utils.data.Subset(val_dataset, val_idx.indices)
-test_set = torch.utils.data.Subset(val_dataset, test_idx.indices)
+eval_dataset = CamouflageDataset(
+    IMG_DIR,
+    MASK_DIR,
+    size=IMG_SIZE,
+    augment=False
+)
+
+train_set = torch.utils.data.Subset(
+    train_dataset,
+    train_indices
+)
+
+val_set = torch.utils.data.Subset(
+    eval_dataset,
+    val_indices
+)
+
+test_set = torch.utils.data.Subset(
+    eval_dataset,
+    test_indices
+)
 
 train_loader = DataLoader(
     train_set,

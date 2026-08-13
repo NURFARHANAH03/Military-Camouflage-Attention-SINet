@@ -12,6 +12,7 @@ import torch.nn.functional as F
 import time
 import threading
 import av
+import textwrap
 
 from streamlit_webrtc import webrtc_streamer, VideoProcessorBase
 from models.sinet_gra import SINet_GRA
@@ -55,10 +56,18 @@ IMAGE_DIR = os.path.join(BASE_DIR, "external_image")
 MODEL_PATH = os.path.join(
     BASE_DIR,
     "checkpoints_combined",
-    "sinet_gra_best.pth"
+    "sinet_gra_best_seed42.pth"
 )
 IMG_SIZE = 320
 MASK_THRESHOLD = 0.4
+
+# Optional local mask folders used only when an uploaded image keeps
+# its original dataset filename. External images simply have no match.
+GT_MASK_DIRS = [
+    os.path.join(BASE_DIR, "combined_dataset", "masks"),
+    os.path.join(BASE_DIR, "mc_dataset_cropped", "masks"),
+    os.path.join(BASE_DIR, "mc_dataset", "masks"),
+]
 
 def get_image(name):
     for ext in [".png", ".jpg", ".jpeg"]:
@@ -70,6 +79,21 @@ def get_image(name):
 def image_to_base64(path):
     with open(path, "rb") as img_file:
         return base64.b64encode(img_file.read()).decode()
+
+
+def find_matching_ground_truth(image_name: str):
+    """Return a matching local mask path when one exists, otherwise None."""
+    base_name = os.path.splitext(os.path.basename(image_name))[0]
+    extensions = [".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"]
+
+    for mask_dir in GT_MASK_DIRS:
+        if not os.path.isdir(mask_dir):
+            continue
+        for ext in extensions:
+            candidate = os.path.join(mask_dir, base_name + ext)
+            if os.path.exists(candidate):
+                return candidate
+    return None
 
 PICTURE_1 = get_image("picture1")
 PICTURE_2 = get_image("picture2")
@@ -123,55 +147,115 @@ def preprocess_image_for_model(image: Image.Image):
 
 def run_sinet_gra_detection(image: Image.Image):
     model, device = load_sinet_gra_model()
+
+    # Synchronise before timing CUDA operations
+    if device.type == "cuda":
+        torch.cuda.synchronize()
+
+    total_start = time.perf_counter()
+
+    # -------------------------
+    # Preprocessing
+    # -------------------------
+    preprocess_start = time.perf_counter()
+
     input_tensor, original_size = preprocess_image_for_model(image)
     input_tensor = input_tensor.to(device)
+
+    if device.type == "cuda":
+        torch.cuda.synchronize()
+
+    preprocess_time = time.perf_counter() - preprocess_start
+
+    # -------------------------
+    # Model inference
+    # -------------------------
+    if device.type == "cuda":
+        torch.cuda.synchronize()
+
+    inference_start = time.perf_counter()
 
     with torch.no_grad():
         logits = model(input_tensor)
         probs = torch.sigmoid(logits)
 
-        # Resize prediction back to uploaded image size for nicer display.
-        probs = F.interpolate(
-            probs,
-            size=(original_size[1], original_size[0]),
-            mode="bilinear",
-            align_corners=False
-        )
+    if device.type == "cuda":
+        torch.cuda.synchronize()
+
+    inference_time = time.perf_counter() - inference_start
+
+    # -------------------------
+    # Postprocessing
+    # -------------------------
+    postprocess_start = time.perf_counter()
+
+    probs = F.interpolate(
+        probs,
+        size=(original_size[1], original_size[0]),
+        mode="bilinear",
+        align_corners=False
+    )
 
     prob_np = probs[0, 0].detach().cpu().numpy()
     mask_np = (prob_np > MASK_THRESHOLD).astype(np.uint8) * 255
 
-    # Confidence: average probability inside detected mask.
     detected_pixels = prob_np[mask_np > 0]
+
     if detected_pixels.size > 0:
-        confidence = float(detected_pixels.mean() * 100)
+        foreground_probability = float(detected_pixels.mean() * 100)
     else:
-        confidence = float(prob_np.max() * 100)
+        foreground_probability = float(prob_np.max() * 100)
 
     mask_area_ratio = float((mask_np > 0).mean())
-    status = "DETECTED" if mask_area_ratio > 0.001 and confidence >= 50 else "NOT DETECTED"
 
-    return mask_np, confidence, status, mask_area_ratio
+    status = (
+        "DETECTED"
+        if mask_area_ratio > 0.001 and foreground_probability >= 50
+        else "NOT DETECTED"
+    )
+
+    postprocess_time = time.perf_counter() - postprocess_start
+    total_time = time.perf_counter() - total_start
+
+    inference_fps = 1.0 / inference_time if inference_time > 0 else 0.0
+    pipeline_fps = 1.0 / total_time if total_time > 0 else 0.0
+
+    timing = {
+        "preprocessing_ms": preprocess_time * 1000,
+        "inference_ms": inference_time * 1000,
+        "postprocessing_ms": postprocess_time * 1000,
+        "total_ms": total_time * 1000,
+        "inference_fps": inference_fps,
+        "pipeline_fps": pipeline_fps,
+        "device": str(device),
+        "model_input": f"{IMG_SIZE} × {IMG_SIZE}",
+        "original_resolution": (
+            f"{original_size[0]} × {original_size[1]}"
+        )
+    }
+
+    return (
+        mask_np,
+        foreground_probability,
+        status,
+        mask_area_ratio,
+        prob_np,
+        timing
+    )
 
 def process_video_every_2_seconds(video_bytes):
-    """
-    Extract frames every 2 seconds from uploaded video,
-    then run SINet + GRA detection on each frame.
-    """
-
+    """Extract one frame every 2 seconds and run SINet + GRA."""
     with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as temp_video:
         temp_video.write(video_bytes)
         temp_video_path = temp_video.name
 
     cap = cv2.VideoCapture(temp_video_path)
-
     if not cap.isOpened():
         os.remove(temp_video_path)
         return []
 
     fps = cap.get(cv2.CAP_PROP_FPS)
     frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-
     if fps <= 0:
         cap.release()
         os.remove(temp_video_path)
@@ -179,144 +263,244 @@ def process_video_every_2_seconds(video_bytes):
 
     duration = frame_count / fps
     results = []
-
-    current_time = 0
+    current_time = 0.0
 
     while current_time <= duration:
         cap.set(cv2.CAP_PROP_POS_MSEC, current_time * 1000)
-
         ret, frame = cap.read()
-
         if not ret:
             break
 
-        # OpenCV reads as BGR, convert to RGB
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         frame_image = Image.fromarray(frame_rgb)
 
-        # Reuse your existing image detection function
-        mask_np, confidence, status, mask_area_ratio = run_sinet_gra_detection(frame_image)
+        (
+            mask_np,
+            foreground_probability,
+            status,
+            mask_area_ratio,
+            _,
+            timing,
+        ) = run_sinet_gra_detection(frame_image)
+
+        overlay = create_prediction_overlay(frame_image, mask_np)
 
         results.append({
             "time": current_time,
             "frame": frame_image,
             "mask": mask_np,
-            "confidence": confidence,
+            "overlay": overlay,
+            "foreground_probability": foreground_probability,
             "status": status,
-            "mask_area_ratio": mask_area_ratio
+            "mask_area_ratio": mask_area_ratio,
+            "timing": timing,
         })
-
-        current_time += 2
+        current_time += 2.0
 
     cap.release()
     os.remove(temp_video_path)
-
     return results
 
+def create_prediction_overlay(
+    image: Image.Image,
+    prediction_mask: np.ndarray,
+    alpha: float = 0.45
+):
+    image_np = np.array(image.convert("RGB"))
+
+    if prediction_mask.shape[:2] != image_np.shape[:2]:
+        prediction_mask = cv2.resize(
+            prediction_mask,
+            (image_np.shape[1], image_np.shape[0]),
+            interpolation=cv2.INTER_NEAREST
+        )
+
+    overlay = image_np.copy()
+    region = prediction_mask > 0
+
+    overlay[region] = (
+        (1 - alpha) * overlay[region]
+        + alpha * np.array([0, 255, 0])
+    ).astype(np.uint8)
+
+    return overlay
+
+def prepare_ground_truth_mask(
+    mask_source,
+    target_size
+):
+    gt_image = Image.open(mask_source).convert("L")
+    gt_image = gt_image.resize(
+        target_size,
+        Image.Resampling.NEAREST
+    )
+
+    gt_np = np.array(gt_image)
+    gt_binary = (gt_np > 0).astype(np.uint8)
+
+    return gt_binary
+
+def calculate_sample_metrics(
+    prediction_mask: np.ndarray,
+    ground_truth_mask: np.ndarray,
+    eps: float = 1e-7
+):
+    pred = (prediction_mask > 0).astype(np.uint8)
+    gt = (ground_truth_mask > 0).astype(np.uint8)
+
+    intersection = np.logical_and(pred, gt).sum()
+    pred_sum = pred.sum()
+    gt_sum = gt.sum()
+    union = np.logical_or(pred, gt).sum()
+
+    dice = (
+        (2.0 * intersection + eps)
+        / (pred_sum + gt_sum + eps)
+    )
+
+    iou = (
+        (intersection + eps)
+        / (union + eps)
+    )
+
+    return float(dice), float(iou)
+
+def create_comparison_overlay(
+    image: Image.Image,
+    prediction_mask: np.ndarray,
+    ground_truth_mask: np.ndarray,
+    alpha: float = 0.55
+):
+    image_np = np.array(image.convert("RGB"))
+
+    pred = prediction_mask > 0
+    gt = ground_truth_mask > 0
+
+    true_positive = pred & gt
+    false_positive = pred & (~gt)
+    false_negative = (~pred) & gt
+
+    overlay = image_np.copy().astype(np.float32)
+
+    colours = {
+        "tp": np.array([0, 255, 0]),     # green
+        "fp": np.array([255, 0, 0]),     # red
+        "fn": np.array([0, 100, 255])    # blue
+    }
+
+    overlay[true_positive] = (
+        (1 - alpha) * overlay[true_positive]
+        + alpha * colours["tp"]
+    )
+
+    overlay[false_positive] = (
+        (1 - alpha) * overlay[false_positive]
+        + alpha * colours["fp"]
+    )
+
+    overlay[false_negative] = (
+        (1 - alpha) * overlay[false_negative]
+        + alpha * colours["fn"]
+    )
+
+    return overlay.astype(np.uint8)
     # =====================================================
     # LIVE WEBCAM DETECTION PROCESSOR
     # =====================================================
 class CamouflageLiveProcessor(VideoProcessorBase):
-        """
-        Runs SINet + GRA inference once every second.
-        Intermediate webcam frames keep showing the latest prediction result.
-        """
+    """Continuous webcam preview with a refreshed mask approximately once per second."""
 
-        def __init__(self, model, device, interval_seconds=1.0):
-            self.model = model
-            self.device = device
-            self.interval_seconds = interval_seconds
+    def __init__(self, model, device, interval_seconds=1.0):
+        self.model = model
+        self.device = device
+        self.interval_seconds = interval_seconds
+        self.last_processed_time = 0.0
+        self.latest_mask = None
+        self.latest_foreground_probability = 0.0
+        self.latest_status = "WAITING"
+        self.latest_timing = None
+        self.lock = threading.Lock()
 
-            self.last_processed_time = 0.0
-            self.latest_mask = None
-            self.latest_confidence = 0.0
-            self.latest_status = "WAITING"
-            self.lock = threading.Lock()
+    def recv(self, frame):
+        frame_rgb = frame.to_ndarray(format="rgb24")
+        current_time = time.monotonic()
 
-        def recv(self, frame):
-            # Convert incoming webcam frame to RGB NumPy image
-            frame_rgb = frame.to_ndarray(format="rgb24")
-            current_time = time.monotonic()
-
-            # Run model inference only once every 1 second
-            if current_time - self.last_processed_time >= self.interval_seconds:
-                pil_image = Image.fromarray(frame_rgb)
-
-                mask_np, confidence, status, _ = run_sinet_gra_detection(
-                    pil_image
-                )
-
-                with self.lock:
-                    self.latest_mask = mask_np
-                    self.latest_confidence = confidence
-                    self.latest_status = status
-                    self.last_processed_time = current_time
-
-            # Copy the current webcam frame for mask overlay
-            output_frame = frame_rgb.copy()
+        if current_time - self.last_processed_time >= self.interval_seconds:
+            pil_image = Image.fromarray(frame_rgb)
+            (
+                mask_np,
+                foreground_probability,
+                status,
+                _,
+                _,
+                timing,
+            ) = run_sinet_gra_detection(pil_image)
 
             with self.lock:
-                mask = self.latest_mask
-                confidence = self.latest_confidence
-                status = self.latest_status
+                self.latest_mask = mask_np
+                self.latest_foreground_probability = foreground_probability
+                self.latest_status = status
+                self.latest_timing = timing
+                self.last_processed_time = current_time
 
-            # Apply the latest predicted mask as a green overlay
-            if mask is not None:
-                if mask.shape[:2] != output_frame.shape[:2]:
-                    mask = cv2.resize(
-                        mask,
-                        (output_frame.shape[1], output_frame.shape[0]),
-                        interpolation=cv2.INTER_NEAREST
-                    )
+        output_frame = frame_rgb.copy()
+        with self.lock:
+            mask = self.latest_mask
+            foreground_probability = self.latest_foreground_probability
+            status = self.latest_status
+            timing = self.latest_timing
 
-                detected_region = mask > 0
+        if mask is not None:
+            if mask.shape[:2] != output_frame.shape[:2]:
+                mask = cv2.resize(
+                    mask,
+                    (output_frame.shape[1], output_frame.shape[0]),
+                    interpolation=cv2.INTER_NEAREST,
+                )
+            detected_region = mask > 0
+            output_frame[detected_region] = (
+                0.55 * output_frame[detected_region]
+                + 0.45 * np.array([0, 255, 0])
+            ).astype(np.uint8)
 
-                # Blend green segmentation mask on the live frame
-                output_frame[detected_region] = (
-                    0.55 * output_frame[detected_region]
-                    + 0.45 * np.array([0, 255, 0])
-                ).astype(np.uint8)
+        if status == "DETECTED":
+            label_color = (0, 255, 0)
+        elif status == "NOT DETECTED":
+            label_color = (255, 0, 0)
+        else:
+            label_color = (255, 255, 0)
 
-            # Status colour
-            if status == "DETECTED":
-                label_color = (0, 255, 0)
-            elif status == "NOT DETECTED":
-                label_color = (255, 0, 0)
-            else:
-                label_color = (255, 255, 0)
-
-            # Add text directly on the webcam preview
-            cv2.putText(
-                output_frame,
-                f"Confidence: {confidence:.2f}%",
-                (20, 40),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.8,
-                label_color,
-                2
-            )
-
-            cv2.putText(
-                output_frame,
-                f"Status: {status}",
-                (20, 75),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.8,
-                label_color,
-                2
-            )
-
-            cv2.putText(
-                output_frame,
-                "Model updates every 1 second",
-                (20, 110),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.6,
-                (255, 255, 255),
-                2
-            )
-
-            return av.VideoFrame.from_ndarray(output_frame, format="rgb24")
+        cv2.putText(
+            output_frame,
+            f"Foreground probability: {foreground_probability:.2f}%",
+            (20, 40),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.72,
+            label_color,
+            2,
+        )
+        cv2.putText(
+            output_frame,
+            f"Status: {status}",
+            (20, 75),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.8,
+            label_color,
+            2,
+        )
+        timing_text = "Model update interval: 1.0 s"
+        if timing:
+            timing_text += f" | Inference: {timing['inference_ms']:.1f} ms"
+        cv2.putText(
+            output_frame,
+            timing_text,
+            (20, 110),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.52,
+            (255, 255, 255),
+            2,
+        )
+        return av.VideoFrame.from_ndarray(output_frame, format="rgb24")
 
 # =====================================================
 # CSS
@@ -777,22 +961,63 @@ elif page == "Detection":
                 st.session_state["uploaded_image_name"] = uploaded_file.name
 
                 st.success("Image uploaded successfully.")
-
                 preview_image = Image.open(io.BytesIO(uploaded_bytes)).convert("RGB")
-                st.image(
-                    preview_image,
-                    caption="Uploaded Image Preview",
-                    width=300
-                )
+                st.image(preview_image, caption="Uploaded Image Preview", width=300)
 
-                if st.button("Run Image Detection", use_container_width=True):
-                    with st.spinner("Running SINet + GRA detection..."):
-                        mask_np, confidence, status, mask_area_ratio = run_sinet_gra_detection(preview_image)
+                matching_gt_path = find_matching_ground_truth(uploaded_file.name)
+                if matching_gt_path:
+                    st.info("Matching ground-truth mask found: internal evaluation mode.")
+                    analysis_type = "Internal Evaluation"
+                else:
+                    st.info("No matching mask found: external prediction mode.")
+                    analysis_type = "External Prediction"
 
-                    st.session_state["prediction_mask"] = mask_np
-                    st.session_state["confidence"] = confidence
-                    st.session_state["status"] = status
-                    st.session_state["mask_area_ratio"] = mask_area_ratio
+                if st.button("Run Image Analysis", use_container_width=True):
+                    with st.spinner("Running SINet + GRA analysis..."):
+                        (
+                            mask_np,
+                            foreground_probability,
+                            status,
+                            mask_area_ratio,
+                            _,
+                            timing,
+                        ) = run_sinet_gra_detection(preview_image)
+
+                        prediction_overlay = create_prediction_overlay(preview_image, mask_np)
+
+                        st.session_state["prediction_mask"] = mask_np
+                        st.session_state["prediction_overlay"] = prediction_overlay
+                        st.session_state["foreground_probability"] = foreground_probability
+                        st.session_state["status"] = status
+                        st.session_state["mask_area_ratio"] = mask_area_ratio
+                        st.session_state["timing"] = timing
+                        st.session_state["analysis_type"] = analysis_type
+
+                        for key in [
+                            "ground_truth_mask",
+                            "comparison_overlay",
+                            "sample_dice",
+                            "sample_iou",
+                            "ground_truth_path",
+                        ]:
+                            st.session_state.pop(key, None)
+
+                        if matching_gt_path:
+                            gt_binary = prepare_ground_truth_mask(
+                                matching_gt_path, preview_image.size
+                            )
+                            sample_dice, sample_iou = calculate_sample_metrics(
+                                mask_np, gt_binary
+                            )
+                            comparison_overlay = create_comparison_overlay(
+                                preview_image, mask_np, gt_binary
+                            )
+                            st.session_state["ground_truth_mask"] = gt_binary * 255
+                            st.session_state["comparison_overlay"] = comparison_overlay
+                            st.session_state["sample_dice"] = sample_dice
+                            st.session_state["sample_iou"] = sample_iou
+                            st.session_state["ground_truth_path"] = matching_gt_path
+
                     st.session_state["detection_done"] = True
                     st.session_state.page = "Results"
                     st.rerun()
@@ -857,36 +1082,34 @@ elif page == "Detection":
 elif page == "Results":
 
     top_navigation()
-
     input_mode = st.session_state.get("input_mode", "Image")
 
     if input_mode == "Video":
         video_results = st.session_state.get("video_results", [])
-
         st.markdown(
             "<h1 style='text-align:center; color:#1f4328;'>Video Detection Results</h1>",
-            unsafe_allow_html=True
+            unsafe_allow_html=True,
         )
 
-        if len(video_results) == 0:
+        if not video_results:
             st.warning("No video frames were processed.")
             st.stop()
 
-        # Summary table
-        summary_data = []
-        for result in video_results:
-            summary_data.append({
-                "Timestamp (s)": f"{result['time']:.0f}s",
-                "Confidence (%)": f"{result['confidence']:.2f}",
-                "Status": result["status"]
-            })
-
+        summary_data = [
+            {
+                "Timestamp (s)": f"{r['time']:.0f}s",
+                "Foreground Probability (%)": f"{r['foreground_probability']:.2f}",
+                "Status": r["status"],
+                "Total Time (ms)": f"{r['timing']['total_ms']:.1f}",
+            }
+            for r in video_results
+        ]
         st.dataframe(pd.DataFrame(summary_data), use_container_width=True)
 
-        detected_count = sum(1 for r in video_results if r["status"] == "DETECTED")
+        detected_count = sum(r["status"] == "DETECTED" for r in video_results)
         total_count = len(video_results)
-        avg_confidence = sum(r["confidence"] for r in video_results) / total_count
-
+        avg_probability = sum(r["foreground_probability"] for r in video_results) / total_count
+        avg_total_ms = sum(r["timing"]["total_ms"] for r in video_results) / total_count
         overall_status = "DETECTED" if detected_count > 0 else "NOT DETECTED"
         overall_color = "#62ff5f" if overall_status == "DETECTED" else "#ff3b3b"
 
@@ -895,134 +1118,179 @@ elif page == "Results":
             <div class="result-card">
                 <div style="display:flex; justify-content:space-between; gap:40px;">
                     <div>
-                        Model: SINet + GRA<br>
-                        Video Sampling: Every 2 seconds<br>
-                        Processed Frames: {total_count}<br>
-                        Detected Frames: {detected_count}
+                        Model: Adapted SINet + GRA<br>
+                        Video sampling: every 2 seconds<br>
+                        Processed frames: {total_count}<br>
+                        Detected frames: {detected_count}<br>
+                        Mean total time: {avg_total_ms:.1f} ms
                     </div>
                     <div>
-                        Average Confidence:<br>
-                        <span style="font-size:42px; color:{overall_color};">{avg_confidence:.2f}%</span><br>
-                        Overall Status:<br>
+                        Mean foreground probability:<br>
+                        <span style="font-size:42px; color:{overall_color};">{avg_probability:.2f}%</span><br>
+                        Overall status:<br>
                         <span style="font-size:42px; color:{overall_color};">{overall_status}</span>
                     </div>
                 </div>
             </div>
             """,
-            unsafe_allow_html=True
+            unsafe_allow_html=True,
         )
-
-        st.write("")
 
         for result in video_results:
             st.markdown(
                 f"<h2 style='color:#1f4328;'>Frame at {result['time']:.0f} seconds</h2>",
-                unsafe_allow_html=True
+                unsafe_allow_html=True,
             )
-
-
-            col1, col2 = st.columns(2)
-
-            with col1:
-                st.markdown(
-                    "<h3 style='text-align:center; color:#1f4328;'>Original Frame</h3>",
-                    unsafe_allow_html=True
-                )
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                st.markdown("### Original Frame")
                 st.image(result["frame"], use_container_width=True)
-
-            with col2:
-                st.markdown(
-                    "<h3 style='text-align:center; color:#1f4328;'>Prediction Mask</h3>",
-                    unsafe_allow_html=True
-                )
+            with c2:
+                st.markdown("### Prediction Mask")
                 st.image(result["mask"], clamp=True, use_container_width=True)
+            with c3:
+                st.markdown("### Prediction Overlay")
+                st.image(result["overlay"], use_container_width=True)
 
             color = "#62ff5f" if result["status"] == "DETECTED" else "#ff3b3b"
-
             st.markdown(
                 f"""
                 <div class="result-card">
-                    Detection Confidence:
-                    <span style="color:{color};">{result['confidence']:.2f}%</span>
-                    &nbsp;&nbsp; | &nbsp;&nbsp;
-                    Status:
-                    <span style="color:{color};">{result['status']}</span>
+                    Foreground probability: <span style="color:{color};">{result['foreground_probability']:.2f}%</span>
+                    &nbsp;&nbsp; | &nbsp;&nbsp; Status: <span style="color:{color};">{result['status']}</span>
+                    &nbsp;&nbsp; | &nbsp;&nbsp; Total processing: {result['timing']['total_ms']:.1f} ms
                 </div>
                 """,
+                unsafe_allow_html=True,
+            )
+        st.stop()
+
+    uploaded_image_bytes = st.session_state.get("uploaded_image_bytes")
+    prediction_mask = st.session_state.get("prediction_mask")
+    prediction_overlay = st.session_state.get("prediction_overlay")
+    ground_truth_mask = st.session_state.get("ground_truth_mask")
+    comparison_overlay = st.session_state.get("comparison_overlay")
+    analysis_type = st.session_state.get("analysis_type", "External Prediction")
+
+    if uploaded_image_bytes is None or prediction_mask is None:
+        st.warning("No completed image analysis was found.")
+        st.stop()
+
+    image = Image.open(io.BytesIO(uploaded_image_bytes)).convert("RGB")
+
+    if ground_truth_mask is not None and comparison_overlay is not None:
+        st.markdown(
+            "<h1 style='text-align:center; color:#1f4328;'>Qualitative Segmentation Evaluation</h1>",
+            unsafe_allow_html=True,
+        )
+        c1, c2, c3, c4 = st.columns(4)
+        with c1:
+            st.markdown("### Original")
+            st.image(image, use_container_width=True)
+        with c2:
+            st.markdown("### Ground Truth")
+            st.image(ground_truth_mask, clamp=True, use_container_width=True)
+        with c3:
+            st.markdown("### Prediction")
+            st.image(prediction_mask, clamp=True, use_container_width=True)
+        with c4:
+            st.markdown("### Comparison Overlay")
+            st.image(comparison_overlay, use_container_width=True)
+        st.caption("Overlay: green = correct foreground, red = false positive, blue = missed ground-truth region.")
+    else:
+        st.markdown(
+            "<h1 style='text-align:center; color:#1f4328;'>External Image Prediction</h1>",
+            unsafe_allow_html=True,
+        )
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            st.markdown("### Original")
+            st.image(image, use_container_width=True)
+        with c2:
+            st.markdown("### Prediction Mask")
+            st.image(prediction_mask, clamp=True, use_container_width=True)
+        with c3:
+            st.markdown("### Prediction Overlay")
+            st.image(prediction_overlay, use_container_width=True)
+        st.caption("Green overlay = model-predicted camouflage region. No ground-truth mask was available for this external image.")
+
+    foreground_probability = st.session_state.get("foreground_probability", 0.0)
+    status = st.session_state.get("status", "NOT DETECTED")
+    timing = st.session_state.get("timing", {})
+    sample_dice = st.session_state.get("sample_dice")
+    sample_iou = st.session_state.get("sample_iou")
+
+    st.markdown(f"### Analysis Type: {analysis_type}")
+    status_color = "#1b8f3a" if status == "DETECTED" else "#d62828"
+    if sample_dice is not None and sample_iou is not None:
+        m1, m2, m3, m4 = st.columns(4)
+
+        with m1:
+            st.markdown(
+                textwrap.dedent(
+                    f"""
+                    <div>
+                        <div style="font-size:14px; color:#333333; margin-bottom:8px;">
+                            Status
+                        </div>
+                        <div style="font-size:34px; font-weight:500; color:{status_color};">
+                            {status}
+                        </div>
+                    </div>
+                    """
+                ),
                 unsafe_allow_html=True
             )
 
-            st.write("")
+        with m2:
+            st.metric("Sample Dice", f"{sample_dice:.4f}")
 
-        st.stop()    
+        with m3:
+            st.metric("Sample IoU", f"{sample_iou:.4f}")
 
-    uploaded_image_bytes = st.session_state.get("uploaded_image_bytes", None)
-    prediction_mask = st.session_state.get("prediction_mask", None)
+        with m4:
+            st.metric(
+                "Foreground Probability",
+                f"{foreground_probability:.2f}%"
+            )
 
-    col1, col2 = st.columns(2)
-
-    with col1:
-        st.markdown(
-            "<h1 style='text-align:center; color:#1f4328;'>Original Image</h1>",
-            unsafe_allow_html=True
-        )
-        st.markdown("<div class='image-frame'>", unsafe_allow_html=True)
-
-        if uploaded_image_bytes is not None:
-            image = Image.open(io.BytesIO(uploaded_image_bytes)).convert("RGB")
-            st.image(image, use_container_width=True)
-        elif PICTURE_5:
-            st.image(PICTURE_5, use_container_width=True)
-
-        st.markdown("</div>", unsafe_allow_html=True)
-
-    with col2:
-        st.markdown(
-            "<h1 style='text-align:center; color:#1f4328;'>Prediction Mask</h1>",
-            unsafe_allow_html=True
-        )
-        st.markdown("<div class='image-frame'>", unsafe_allow_html=True)
-
-        if prediction_mask is not None:
-            st.image(prediction_mask, clamp=True, use_container_width=True)
-        elif PICTURE_5:
-            st.image(PICTURE_5, use_container_width=True)
-
-        st.markdown("</div>", unsafe_allow_html=True)
-
-    st.write("")
-
-    confidence = st.session_state.get("confidence", 0.0)
-    status = st.session_state.get("status", "NOT DETECTED")
-
-    if status == "DETECTED":
-        color = "#62ff5f"
     else:
-        color = "#ff3b3b"
+        m1, m2, m3, m4 = st.columns(4)
 
-    st.markdown(
-        f"""
-        <div class="result-card">
-            <div style="display:flex; justify-content:space-between; gap:40px;">
-                <div>
-                    Model: SINet + GRA<br>
-                    Validation Dice Score:
-                    <span style="color:#62ff5f;">0.8650</span><br>
-                    Validation IoU Score:
-                    <span style="color:#62ff5f;">0.7808</span>
-                </div>
-                <div>
-                    Detection Confidence:<br>
-                    <span style="font-size:42px; color:{color};">{confidence:.2f}%</span><br>
-                    Status:<br>
-                    <span style="font-size:42px; color:{color};">{status}</span>
-                </div>
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
+        with m1:
+            st.markdown(
+                textwrap.dedent(
+                    f"""
+                    <div>
+                        <div style="font-size:14px; color:#333333; margin-bottom:8px;">
+                            Status
+                        </div>
+                        <div style="font-size:34px; font-weight:500; color:{status_color};">
+                            {status}
+                        </div>
+                    </div>
+                    """
+                ),
+                unsafe_allow_html=True
+            )
 
+        with m2:
+            st.metric(
+                "Foreground Probability",
+                f"{foreground_probability:.2f}%"
+            )
+
+        with m3:
+            st.metric(
+                "Total Processing",
+                f"{timing.get('total_ms', 0):.1f} ms"
+            )
+
+        with m4:
+            st.metric(
+                "Pipeline FPS",
+                f"{timing.get('pipeline_fps', 0):.2f}"
+            )
 # =====================================================
 # ABOUT PAGE
 # =====================================================

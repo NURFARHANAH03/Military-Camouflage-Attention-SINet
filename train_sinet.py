@@ -3,11 +3,13 @@ os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 import torch
 import torch.nn as nn
 import numpy as np
-from torch.utils.data import DataLoader, random_split
+from torch.utils.data import DataLoader
 import matplotlib.pyplot as plt
 import cv2
+import random
 
 from dataset_loader import CamouflageDataset
+from group_split import create_group_split
 
 from models.sinet_pretrained import SINet
 # -----------------------
@@ -18,11 +20,30 @@ BATCH_SIZE = 2
 pin_memory = True
 EPOCHS = 20
 LR = 1e-4
+# -----------------------
+# Seeds
+# -----------------------
+SPLIT_SEED = 42      # Keep FIXED
+TRAIN_SEED = 123     # Change this only
 SAVE_DIR = "checkpoints"
 os.makedirs(SAVE_DIR, exist_ok=True)
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print("Using device:", device)
+
+os.environ["PYTHONHASHSEED"] = str(TRAIN_SEED)
+
+random.seed(TRAIN_SEED)
+np.random.seed(TRAIN_SEED)
+
+torch.manual_seed(TRAIN_SEED)
+
+if torch.cuda.is_available():
+    torch.cuda.manual_seed(TRAIN_SEED)
+    torch.cuda.manual_seed_all(TRAIN_SEED)
+
+torch.backends.cudnn.deterministic = True
+torch.backends.cudnn.benchmark = False
 
 # -----------------------
 # Dataset + Split
@@ -41,11 +62,11 @@ n_train = int(0.7 * n_total)
 n_val = int(0.15 * n_total)
 n_test = n_total - n_train - n_val
 
-# split indices only
-train_idx, val_idx, test_idx = random_split(
-    range(n_total),
-    [n_train, n_val, n_test],
-    generator=torch.Generator().manual_seed(42)
+train_indices, val_indices, test_indices = create_group_split(
+    image_files=full_dataset.images,
+    train_ratio=0.70,
+    val_ratio=0.15,
+    seed=SPLIT_SEED
 )
 
 # training dataset = augmentation ON
@@ -64,10 +85,23 @@ val_dataset = CamouflageDataset(
     augment=False
 )
 
-# apply same indices
-train_set = torch.utils.data.Subset(train_dataset, train_idx.indices)
-val_set   = torch.utils.data.Subset(val_dataset, val_idx.indices)
-test_set  = torch.utils.data.Subset(val_dataset, test_idx.indices)
+train_set = torch.utils.data.Subset(
+    train_dataset,
+    train_indices
+)
+
+val_set = torch.utils.data.Subset(
+    val_dataset,
+    val_indices
+)
+
+test_set = torch.utils.data.Subset(
+    val_dataset,
+    test_indices
+)
+
+loader_generator = torch.Generator()
+loader_generator.manual_seed(TRAIN_SEED)
 
 # loaders
 train_loader = DataLoader(
@@ -75,8 +109,10 @@ train_loader = DataLoader(
     batch_size=BATCH_SIZE,
     shuffle=True,
     num_workers=0,   # keep 0 first on Windows
-    pin_memory=pin_memory
+    pin_memory=pin_memory,
+    generator=loader_generator
 )
+
 
 val_loader = DataLoader(
     val_set,
